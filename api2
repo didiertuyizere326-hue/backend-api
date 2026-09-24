@@ -1,0 +1,214 @@
+const express = require("express");
+const mysql = require("mysql2");
+const cors = require("cors");
+const bcrypt = require("bcrypt");
+const session = require("express-session");
+
+const app = express();
+const port = 5000;
+
+// Middleware
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use(
+  session({
+    secret: "my-secret-key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+    },
+  })
+);
+
+// JSON parse error handler
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
+    return res.status(400).json({ error: "Invalid JSON payload" });
+  }
+  next(err);
+});
+
+// MySQL connection
+const connection = mysql.createConnection({
+  host: "localhost",
+  user: "root",
+  password: "",
+  database: "api",
+});
+
+connection.connect((err) => {
+  if (err) {
+    console.error("Error connecting to MySQL:", err);
+    return;
+  }
+  console.log("Connected to MySQL database");
+});
+
+// Helper to verify password
+const verifyPassword = async (inputPassword, storedPassword) => {
+  if (!storedPassword) return false;
+
+  if (storedPassword.startsWith("$2")) {
+    return bcrypt.compare(inputPassword, storedPassword);
+  }
+
+  return inputPassword === storedPassword;
+};
+
+// Create user
+app.post("/insert", async (req, res) => {
+  const { name, email, password } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "Name, email and password are required" });
+  }
+
+  try {
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const sql = "INSERT INTO users (name, email, password) VALUES (?, ?, ?)";
+    connection.query(sql, [name, email, hashedPassword], (err, result) => {
+      if (err) {
+        console.error("Error inserting data:", err);
+        return res.status(500).json({ error: "Error inserting data" });
+      }
+
+      return res.status(200).json({
+        message: "Data inserted successfully",
+        insertedId: result.insertId,
+      });
+    });
+  } catch (error) {
+    console.error("Hashing error:", error);
+    return res.status(500).json({ error: "Server error while hashing password" });
+  }
+});
+
+// Read all users
+app.get("/select", (req, res) => {
+  const sql = "SELECT * FROM users";
+  connection.query(sql, (err, results) => {
+    if (err) {
+      console.error("Error fetching users:", err);
+      return res.status(500).json({ error: "Error fetching users" });
+    }
+
+    return res.status(200).json(results);
+  });
+});
+
+// Update user
+app.put("/update/:id", async (req, res) => {
+  const { id } = req.params;
+  const { name, email, password } = req.body;
+
+  if (!name || !email) {
+    return res.status(400).json({ error: "Name and email are required" });
+  }
+
+  try {
+    let sql = "UPDATE users SET name = ?, email = ? WHERE id = ?";
+    let params = [name, email, id];
+
+    if (password && password.trim() !== "") {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      sql = "UPDATE users SET name = ?, email = ?, password = ? WHERE id = ?";
+      params = [name, email, hashedPassword, id];
+    }
+
+    connection.query(sql, params, (err, result) => {
+      if (err) {
+        console.error("Error updating user:", err);
+        return res.status(500).json({ error: "Error updating user" });
+      }
+
+      return res.status(200).json({ message: "User updated successfully" });
+    });
+  } catch (error) {
+    console.error("Update error:", error);
+    return res.status(500).json({ error: "Server error during update" });
+  }
+});
+
+// Delete user
+app.delete("/delete/:id", (req, res) => {
+  const { id } = req.params;
+
+  const sql = "DELETE FROM users WHERE id = ?";
+  connection.query(sql, [id], (err, result) => {
+    if (err) {
+      console.error("Error deleting user:", err);
+      return res.status(500).json({ error: "Error deleting user" });
+    }
+
+    return res.status(200).json({ message: "User deleted successfully" });
+  });
+});
+
+// Login
+app.post("/login", (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  const sql = "SELECT * FROM users WHERE email = ?";
+
+  connection.query(sql, [email], async (err, results) => {
+    if (err) {
+      console.error("Error fetching user:", err);
+      return res.status(500).json({ error: "Error fetching user" });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = results[0];
+    const isPasswordValid = await verifyPassword(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: "Invalid password" });
+    }
+
+    req.session.user = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+    };
+
+    return res.status(200).json({
+      message: "Login successful",
+      user: req.session.user,
+    });
+  });
+});
+
+// Logout
+app.post("/logout", (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error("Error logging out:", err);
+      return res.status(500).json({ error: "Error logging out" });
+    }
+
+    return res.status(200).json({ message: "Logout successful" });
+  });
+});
+
+// Start server
+app.listen(port, () => {
+  console.log(`Server is running on http://localhost:${port}`);
+});
