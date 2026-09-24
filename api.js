@@ -2,12 +2,30 @@ const express = require("express");
 const mysql = require("mysql2");
 const cors = require("cors");
 const bcrypt = require("bcrypt");
+const session = require("express-session");
 const app = express();
 const port = 5000;
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
 app.use(express.json());
+app.use(
+  session({
+    secret: "my-secret-key",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false,
+      sameSite: "lax",
+    },
+  })
+);
 
 // MySQL connection
 const connection = mysql.createConnection({
@@ -88,39 +106,41 @@ app.delete("/delete/:id", (req, res) => {
 // login 
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
-    const sql = "SELECT * FROM users WHERE email = ?";  
+    const sql = "SELECT * FROM users WHERE email = ?";
+
     connection.query(sql, [email], async (err, results) => {
         if (err) {
-            console.error("Error fetching user:", err); 
-            res.status(500).json({ error: "Error fetching user" });
-        }   else {
-            req.session.user = results[0];
-            if (results.length > 0) {
-                const user = results[0];
-                const isPasswordValid = await bcrypt.compare(password, user.password);
-                if (isPasswordValid) {
-                    res.status(200).json({ message: "Login successful" });
-                } else {
-                    res.status(401).json({ error: "Invalid password" });
-                }
-            } else {
-                res.status(404).json({ error: "User not found" });
-            }
+            console.error("Error fetching user:", err);
+            return res.status(500).json({ error: "Error fetching user" });
         }
+
+        if (results.length === 0) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        const user = results[0];
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+            return res.status(401).json({ error: "Invalid password" });
+        }
+
+        req.session.user = user;
+        return res.status(200).json({ message: "Login successful" });
     });
 });
-//log out
+
+// log out
 app.post("/logout", (req, res) => {
     req.session.destroy((err) => {
         if (err) {
             console.error("Error logging out:", err);
-            res.status(500).json({ error: "Error logging out" });
-        } else {
-            res.status(200).json({ message: "Logout successful" });
+            return res.status(500).json({ error: "Error logging out" });
         }
+
+        return res.status(200).json({ message: "Logout successful" });
     });
-}
-)
+});
 const server = app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
 }
